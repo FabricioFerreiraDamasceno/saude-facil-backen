@@ -24,4 +24,5 @@ numpy
 python-multipart
 jq
 typer
-import httpx
+httpx
+pydantic-settings
