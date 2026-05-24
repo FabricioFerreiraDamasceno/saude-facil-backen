@@ -8,8 +8,8 @@ pymongo
 pydantic
 email-validator
 pyjwt
-bcrypt
-passlib
+bcrypt==4.1.2
+passlib[bcrypt]==1.7.4
 tzdata
 motor
 pytest
