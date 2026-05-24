@@ -18,29 +18,18 @@ JWT_EXPIRE_MINUTES = 60 * 24  # 1 dia
 
 
 # ========== FUNÇÕES AUXILIARES ==========
-
 def hash_password(password: str) -> str:
-    """
-    Hash a password using bcrypt
-    Limita a 72 caracteres como o bcrypt requer
-    """
-    # ✅ Limitar a 72 caracteres ANTES de hashear
+    """Hash a password using bcrypt - limita a 72 caracteres"""
+    # 🔥 CORREÇÃO CRÍTICA: Limitar ANTES de qualquer operação
     if len(password) > 72:
-        logger.warning(f"Senha truncada de {len(password)} para 72 caracteres")
         password = password[:72]
-    
     return pwd_context.hash(password)
 
-
 def verify_password(plain: str, hashed: str) -> bool:
-    """
-    Verify a password against a hash
-    Limita a 72 caracteres para compatibilidade
-    """
-    # ✅ Limitar a 72 caracteres para verificação
+    """Verify a password - limita a 72 caracteres"""
+    # 🔥 CORREÇÃO CRÍTICA: Limitar ANTES de verificar
     if len(plain) > 72:
         plain = plain[:72]
-    
     return pwd_context.verify(plain, hashed)
 
 
@@ -121,8 +110,9 @@ async def login_user(data):
     # ✅ Validar tamanho da senha
     if len(password) > 72:
         password = password[:72]
+        logger.warning(f"Senha truncada para 72 caracteres para o usuário {email}")
     
-    logger.info(f"🔐 Tentativa de login: {email}")
+    logger.info(f"🔐 Tentativa de login: {email} (senha tamanho: {len(password)})")
     
     try:
         # Buscar usuário
