@@ -7,33 +7,41 @@ import jwt
 import os
 import logging
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuração de hash de senha
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Configuração JWT
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    logger.error("❌ JWT_SECRET não definido! Usando valor padrão para desenvolvimento")
-    JWT_SECRET = "dev_secret_key_change_in_production"
-
+JWT_SECRET = os.getenv("JWT_SECRET", "dev_secret_key_change_in_production")
 JWT_EXPIRE_MINUTES = 60 * 24  # 1 dia
 
 
 # ========== FUNÇÕES AUXILIARES ==========
 
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    password = password[:72]
+    """
+    Hash a password using bcrypt
+    Limita a 72 caracteres como o bcrypt requer
+    """
+    # ✅ Limitar a 72 caracteres ANTES de hashear
+    if len(password) > 72:
+        logger.warning(f"Senha truncada de {len(password)} para 72 caracteres")
+        password = password[:72]
+    
     return pwd_context.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """Verify a password against a hash"""
-    return pwd_context.verify(plain[:72], hashed)
+    """
+    Verify a password against a hash
+    Limita a 72 caracteres para compatibilidade
+    """
+    # ✅ Limitar a 72 caracteres para verificação
+    if len(plain) > 72:
+        plain = plain[:72]
+    
+    return pwd_context.verify(plain, hashed)
 
 
 def create_token(user_id: str, email: str) -> str:
@@ -51,6 +59,15 @@ def create_token(user_id: str, email: str) -> str:
 async def register_user(data):
     """Register a new user"""
     email = data.email.lower().strip()
+    password = data.password
+    
+    # ✅ Validar tamanho da senha
+    if len(password) > 72:
+        raise HTTPException(
+            status_code=400, 
+            detail="A senha não pode ter mais de 72 caracteres"
+        )
+    
     logger.info(f"📝 Tentativa de registro: {email}")
     
     try:
@@ -64,8 +81,8 @@ async def register_user(data):
         new_user = {
             "full_name": data.full_name,
             "email": email,
-            "password_hash": hash_password(data.password),
-            "role": "USER",
+            "password_hash": hash_password(password),  # ✅ Usar hash_password
+            "role": "PATIENT",  # Padrão para registro
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -83,7 +100,7 @@ async def register_user(data):
                 "id": str(result.inserted_id),
                 "email": email,
                 "full_name": data.full_name,
-                "role": "USER"
+                "role": "PATIENT"
             }
         }
         
@@ -99,6 +116,12 @@ async def register_user(data):
 async def login_user(data):
     """Authenticate a user and return a token"""
     email = data.email.lower().strip()
+    password = data.password
+    
+    # ✅ Validar tamanho da senha
+    if len(password) > 72:
+        password = password[:72]
+    
     logger.info(f"🔐 Tentativa de login: {email}")
     
     try:
@@ -109,14 +132,15 @@ async def login_user(data):
             logger.warning(f"❌ Usuário não encontrado: {email}")
             raise HTTPException(status_code=401, detail="Usuário não encontrado")
         
-        # Verificar senha
+        # Verificar senha - suporta tanto 'password_hash' quanto 'password' (legado)
         password_hash = user.get("password_hash") or user.get("password")
         
         if not password_hash:
             logger.error(f"❌ Usuário sem senha: {email}")
             raise HTTPException(status_code=401, detail="Erro na autenticação")
         
-        if not verify_password(data.password, password_hash):
+        # ✅ Usar verify_password que já trata o limite de 72 caracteres
+        if not verify_password(password, password_hash):
             logger.warning(f"❌ Senha inválida para: {email}")
             raise HTTPException(status_code=401, detail="Senha inválida")
         
@@ -138,7 +162,7 @@ async def login_user(data):
                 "id": str(user["_id"]),
                 "email": user["email"],
                 "full_name": user.get("full_name", user.get("fullName", "")),
-                "role": user.get("role", "USER")
+                "role": user.get("role", "PATIENT")
             }
         }
         
@@ -156,7 +180,6 @@ async def get_current_user_from_token(token: str):
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         user_id = payload.get("sub")
-        email = payload.get("email")
         
         if not user_id:
             return None
@@ -171,7 +194,7 @@ async def get_current_user_from_token(token: str):
             "id": str(user["_id"]),
             "email": user["email"],
             "full_name": user.get("full_name", user.get("fullName", "")),
-            "role": user.get("role", "USER")
+            "role": user.get("role", "PATIENT")
         }
         
     except jwt.ExpiredSignatureError:
