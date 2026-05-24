@@ -17,20 +17,30 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev_secret_key_change_in_production")
 JWT_EXPIRE_MINUTES = 60 * 24  # 1 dia
 
 
-# ========== FUNÇÕES AUXILIARES ==========
+def normalize_password(password: str) -> str:
+    """Garante compatibilidade com bcrypt (máx 72 bytes)"""
+    encoded = password.encode("utf-8")
+
+    if len(encoded) > 72:
+        encoded = encoded[:72]
+
+    return encoded.decode("utf-8", errors="ignore")
+
+
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt - limita a 72 caracteres"""
-    # 🔥 CORREÇÃO CRÍTICA: Limitar ANTES de qualquer operação
-    if len(password) > 72:
-        password = password[:72]
+    """Hash seguro para bcrypt"""
+    password = normalize_password(password)
     return pwd_context.hash(password)
 
+
 def verify_password(plain: str, hashed: str) -> bool:
-    """Verify a password - limita a 72 caracteres"""
-    # 🔥 CORREÇÃO CRÍTICA: Limitar ANTES de verificar
-    if len(plain) > 72:
-        plain = plain[:72]
-    return pwd_context.verify(plain, hashed)
+    """Verifica senha com segurança"""
+    try:
+        plain = normalize_password(plain)
+        return pwd_context.verify(plain, hashed)
+    except Exception as e:
+        logger.error(f"Erro verify_password: {str(e)}")
+        return False
 
 
 def create_token(user_id: str, email: str) -> str:
@@ -109,10 +119,8 @@ async def login_user(data):
     
     # ✅ Validar tamanho da senha
     if len(password) > 72:
-        password = password[:72]
-        logger.warning(f"Senha truncada para 72 caracteres para o usuário {email}")
-    
-    logger.info(f"🔐 Tentativa de login: {email} (senha tamanho: {len(password)})")
+        password = normalize_password(data.password)
+        
     
     try:
         # Buscar usuário
