@@ -56,6 +56,6 @@ async def create_provider(data):
         "rating_count": 0,
     }
 
-    await db.providers.insert_one(provider)
+    await db["providers"].insert_one(provider)
 
     return provider

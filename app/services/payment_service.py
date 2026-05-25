@@ -4,68 +4,53 @@ from fastapi import HTTPException
 from app.core.database import db
 from app.utils.commission import get_commission_rate  
 
-async def process_payment_webhook(gateway: str, payload: dict):
+import logging
+async def process_payment_webhook(
+    gateway: str,
+    payload: dict
+):
     """
-    Processa o webhook vindo do Gateway de Pagamento de forma assíncrona no Mongo.
+    Processa webhook do gateway
     """
-    # 1. Registra o evento de Webhook recebido para fins de auditoria
-    event = {
-        "id": str(uuid.uuid4()),
-        "gateway": gateway,
-        "event_type": payload.get("type", "unknown"),
-        "payload": payload,
-        "processed": False,
-        "created_at": datetime.now(timezone.utc)
-    }
-    await db.webhook_events.insert_one(event)
-
-    # 2. Captura os dados de referência enviados pelo gateway
-    payment_id = payload.get("payment_id")
-    status_gateway = payload.get("status")  # ex: 'approved', 'failed'
-
-    if not payment_id:
-        raise HTTPException(status_code=400, detail="ID de pagamento ausente no payload")
-
-    # 3. Busca o pagamento pendente no MongoDB
-    payment = await db.payments.find_one({"id": payment_id})
-    if not payment:
-        raise HTTPException(status_code=404, detail=f"Pagamento {payment_id} não encontrado")
-
-    # 4. Atualiza o status com base no retorno
-    new_status = "PENDING"
-    if status_gateway == "approved":
-        new_status = "PAID"
-    elif status_gateway == "failed":
-        new_status = "FAILED"
-
-    await db.payments.update_one(
-        {"id": payment_id},
-        {
-            "$set": {
-                "status": new_status,
-                "transaction_id": payload.get("transaction_id"),
-                "paid_at": datetime.now(timezone.utc) if new_status == "PAID" else None,
-                "updated_at": datetime.now(timezone.utc)
-            }
+    logger = logging.getLogger(__name__)
+    try:
+        event = {
+            "id": str(uuid.uuid4()),
+            "gateway": gateway,
+            "event_type": payload.get(
+                "type",
+                "unknown"
+            ),
+            "payload": payload,
+            "processed": False,
+            "created_at": datetime.now(
+                timezone.utc
+            )
         }
-    )
 
-    # 5. Se o pagamento foi aprovado com sucesso, engatilha a confirmação do fluxo
-    if new_status == "PAID":
-        await confirm_order_and_appointment(payment["order_id"])
+        # salva evento
+        await db["webhook_events"].insert_one(
+            event
+        )
 
-    # 6. Marca o evento como processado
-    await db.webhook_events.update_one(
-        {"id": event["id"]},
-        {
-            "$set": {
-                "processed": True,
-                "processed_at": datetime.now(timezone.utc)
-            }
+        logger.info(
+            f"Webhook recebido: {gateway}"
+        )
+
+        return {
+            "success": True,
+            "message": "Webhook processado"
         }
-    )
 
-    return {"status": "success", "payment_status": new_status}
+    except Exception as e:
+        logger.exception(
+            "Erro ao processar webhook"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 async def confirm_order_and_appointment(order_id: str):

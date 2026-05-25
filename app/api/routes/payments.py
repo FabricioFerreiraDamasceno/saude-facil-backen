@@ -23,7 +23,9 @@ async def create_checkout(
         raise HTTPException(status_code=400, detail="order_id e method são obrigatórios")
 
     # Busca o pedido correspondente para conferir o valor total
-    order = await db.orders.find_one({"id": order_id})
+    order = await db["orders"].find_one(
+    {"id": order_id}
+)   
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
 
@@ -43,10 +45,11 @@ async def create_checkout(
         "updated_at": datetime.now(timezone.utc),
     }
 
-    await db.payments.insert_one(payment_document)
+    await db["payments"].insert_one(
+    payment_document
+    )
 
-    # Aqui  integraria a chamada SDK do Gateway real se necessário (ex: gerar Pix copia e cola)
-    # Retornamos o ID do pagamento para que o frontend ou o simulador consiga atualizar o status
+    
     return {
         "message": "Checkout iniciado com sucesso",
         "payment_id": payment_id,

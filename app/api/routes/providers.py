@@ -74,7 +74,7 @@ async def provider_detail(provider_id: str):
 from datetime import datetime, timedelta
 import uuid
 
-# ... (seus outros imports)
+
 
 @router.put("/availability")
 async def update_availability(body: dict):
@@ -82,12 +82,7 @@ async def update_availability(body: dict):
     Esta rota recebe a lista de regras do frontend e gera os slots de 30 min
     """
     rules = body.get("rules", [])
-    # Aqui idealmente você pegaria o ID do médico pelo Token (current_user)
-    # Como teste, vamos assumir que o frontend enviará ou que temos o contexto
-    # Para produção, use o Depends(get_current_user)
-    
-    # Exemplo: pegando o primeiro provider do banco apenas para teste 
-    # (O correto é usar o ID do médico logado)
+  
     provider = await db.providers.find_one({"status": "ACTIVE"})
     if not provider:
         return {"error": "Nenhum provider encontrado"}

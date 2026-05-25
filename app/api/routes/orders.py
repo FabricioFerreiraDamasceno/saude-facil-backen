@@ -32,7 +32,7 @@ async def create_order_endpoint(
         "updated_at": datetime.now(timezone.utc)
     }
     
-    await db.orders.insert_one(order)
+    await db["orders"].insert_one(order)
     
     return {
         "id": order["id"],
