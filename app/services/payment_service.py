@@ -59,7 +59,7 @@ async def process_payment_webhook(
         }
 
         # ✅ CORREÇÃO
-        await db.webhook_events.insert_one(
+        await db["webhook_events"].insert_one(
             event
         )
 
@@ -157,9 +157,9 @@ async def confirm_order_and_appointment(
     appointment e gera comissão
     """
 
-    order = await db.orders.find_one({
-        "id": order_id
-    })
+    order = await db["orders"].find_one({
+    "id": order_id
+  })
 
     if not order:
         logger.warning(
@@ -169,7 +169,7 @@ async def confirm_order_and_appointment(
         return
 
     # atualizar pedido
-    await db.orders.update_one(
+    await db["orders"].update_one(
         {
             "id": order_id
         },
@@ -207,7 +207,7 @@ async def confirm_order_and_appointment(
         )
 
         if appointment:
-            await db.appointments.update_one(
+            appointment = await db["appointments"].find_one(
                 {
                     "id":
                     appointment_id
