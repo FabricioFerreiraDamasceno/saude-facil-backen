@@ -1,72 +1,139 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
-from app.core.security import get_current_user
-from app.services.payment_service import process_payment_webhook
-from app.core.database import db
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Body,
+)
+
+from datetime import (
+    datetime,
+    timezone,
+)
+
 import uuid
-from datetime import datetime, timezone
+
+from app.core.security import (
+    get_current_user,
+)
+
+from app.services.payment_service import (
+    process_payment_webhook,
+)
+
+from app.core.database import db
+
 
 router = APIRouter()
 
+
 @router.post("/checkout")
 async def create_checkout(
-    payload: dict = Body(...), 
-    user=Depends(get_current_user)
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
 ):
     """
-    Rota acionada quando o paciente escolhe a forma de pagamento no app.
-    Gera o registro PENDING na coleção 'payments'.
+    Cria um pagamento pendente
     """
-    order_id = payload.get("order_id")
-    method = payload.get("method")  # 'PIX', 'CREDIT_CARD', 'BOLETO'
 
-    if not order_id or not method:
-        raise HTTPException(status_code=400, detail="order_id e method são obrigatórios")
+    try:
+        order_id = payload.get("order_id")
+        method = payload.get("method")
 
-    # Busca o pedido correspondente para conferir o valor total
-    order = await db["orders"].find_one(
-    {"id": order_id}
-)   
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+        if not order_id:
+            raise HTTPException(
+                status_code=400,
+                detail="order_id é obrigatório",
+            )
 
-    # Monta o documento no padrão do MongoDB
-    payment_id = str(uuid.uuid4())
-    payment_document = {
-        "id": payment_id,
-        "user_id": user["id"],
-        "user_name": user.get("full_name"),
-        "order_id": order_id,
-        "method": method,
-        "status": "PENDING",
-        "amount": float(order.get("total", 0)),
-        "paid_at": None,
-        "transaction_id": None,
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
-    }
+        if not method:
+            raise HTTPException(
+                status_code=400,
+                detail="method é obrigatório",
+            )
 
-    await db["payments"].insert_one(
-    payment_document
-    )
+        # buscar pedido
+        order = await db.orders.find_one({
+            "id": order_id
+        })
 
-    
-    return {
-        "message": "Checkout iniciado com sucesso",
-        "payment_id": payment_id,
-        "status": "PENDING",
-        "amount": payment_document["amount"]
-    }
+        if not order:
+            raise HTTPException(
+                status_code=404,
+                detail="Pedido não encontrado",
+            )
+
+        payment_id = str(uuid.uuid4())
+
+        payment_document = {
+            "id": payment_id,
+            "user_id": user["id"],
+            "user_email": user.get("email"),
+            "user_name": user.get("full_name"),
+            "order_id": order_id,
+            "method": method,
+            "status": "PENDING",
+            "amount": float(
+                order.get("total", 0)
+            ),
+            "transaction_id": None,
+            "paid_at": None,
+            "created_at": datetime.now(
+                timezone.utc
+            ),
+            "updated_at": datetime.now(
+                timezone.utc
+            ),
+        }
+
+        await db.payments.insert_one(
+            payment_document
+        )
+
+        return {
+            "message":
+                "Checkout iniciado",
+            "payment_id":
+                payment_id,
+            "status":
+                "PENDING",
+            "amount":
+                payment_document["amount"],
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro checkout: {str(e)}"
+        )
 
 
 @router.post("/webhooks/{gateway}")
-async def gateway_webhook(gateway: str, payload: dict = Body(...)):
+async def gateway_webhook(
+    gateway: str,
+    payload: dict = Body(...),
+):
     """
-    Endpoint público e assíncrono que escuta as notificações de pagamento dos gateways.
+    Endpoint webhook gateway
     """
+
     try:
-        result = await process_payment_webhook(gateway, payload)
+        result = await (
+            process_payment_webhook(
+                gateway,
+                payload
+            )
+        )
+
         return result
-    except HTTPException as http_exc:
-        raise http_exc
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro webhook: {str(e)}"
+        )
