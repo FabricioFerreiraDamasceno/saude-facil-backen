@@ -1,10 +1,24 @@
 import uuid
-from datetime import datetime, timezone
-from fastapi import HTTPException
-from app.core.database import db
-from app.utils.commission import get_commission_rate  
-
 import logging
+
+from datetime import (
+    datetime,
+    timezone,
+)
+
+from fastapi import (
+    HTTPException,
+)
+
+from app.core.database import db
+
+from app.utils.commission import (
+    get_commission_rate,
+)
+
+logger = logging.getLogger(__name__)
+
+
 async def process_payment_webhook(
     gateway: str,
     payload: dict
@@ -12,14 +26,30 @@ async def process_payment_webhook(
     """
     Processa webhook do gateway
     """
-    logger = logging.getLogger(__name__)
+
     try:
+        payment_id = payload.get(
+            "payment_id"
+        )
+
+        status = payload.get(
+            "status",
+            "APPROVED"
+        )
+
+        if not payment_id:
+            raise HTTPException(
+                status_code=400,
+                detail="payment_id é obrigatório"
+            )
+
+        # salva evento webhook
         event = {
             "id": str(uuid.uuid4()),
             "gateway": gateway,
             "event_type": payload.get(
                 "type",
-                "unknown"
+                "payment"
             ),
             "payload": payload,
             "processed": False,
@@ -28,19 +58,85 @@ async def process_payment_webhook(
             )
         }
 
-        # salva evento
-        await db["webhook_events"].insert_one(
+        # ✅ CORREÇÃO
+        await db.webhook_events.insert_one(
             event
         )
 
         logger.info(
-            f"Webhook recebido: {gateway}"
+            f"Webhook recebido: "
+            f"{gateway} "
+            f"payment_id={payment_id}"
+        )
+
+        # buscar pagamento
+        payment = await db.payments.find_one({
+            "id": payment_id
+        })
+
+        if not payment:
+            raise HTTPException(
+                status_code=404,
+                detail="Pagamento não encontrado"
+            )
+
+        # atualizar pagamento
+        await db.payments.update_one(
+            {
+                "id": payment_id
+            },
+            {
+                "$set": {
+                    "status": status,
+                    "paid_at": datetime.now(
+                        timezone.utc
+                    ),
+                    "updated_at": datetime.now(
+                        timezone.utc
+                    )
+                }
+            }
+        )
+
+        logger.info(
+            f"Pagamento atualizado: "
+            f"{payment_id} -> {status}"
+        )
+
+        # se aprovado confirma pedido
+        if status.upper() in [
+            "APPROVED",
+            "PAID",
+            "SUCCESS"
+        ]:
+            await confirm_order_and_appointment(
+                payment["order_id"]
+            )
+
+        # marcar evento como processado
+        await db.webhook_events.update_one(
+            {
+                "id": event["id"]
+            },
+            {
+                "$set": {
+                    "processed": True
+                }
+            }
         )
 
         return {
             "success": True,
-            "message": "Webhook processado"
+            "message":
+                "Webhook processado",
+            "payment_id":
+                payment_id,
+            "status":
+                status
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         logger.exception(
@@ -53,59 +149,174 @@ async def process_payment_webhook(
         )
 
 
-async def confirm_order_and_appointment(order_id: str):
+async def confirm_order_and_appointment(
+    order_id: str
+):
     """
-    Atualiza o pedido para PAID, confirma o Appointment associado e gera a comissão.
+    Confirma pedido,
+    appointment e gera comissão
     """
-    # 1. Busca e atualiza o Pedido (Order)
-    order = await db.orders.find_one({"id": order_id})
+
+    order = await db.orders.find_one({
+        "id": order_id
+    })
+
     if not order:
+        logger.warning(
+            f"Pedido não encontrado: "
+            f"{order_id}"
+        )
         return
 
+    # atualizar pedido
     await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {"status": "PAID", "updated_at": datetime.now(timezone.utc)}}
+        {
+            "id": order_id
+        },
+        {
+            "$set": {
+                "status": "PAID",
+                "payment_status":
+                    "APPROVED",
+                "updated_at":
+                    datetime.now(
+                        timezone.utc
+                    )
+            }
+        }
     )
 
-    # 2. Se houver um agendamento (Appointment) vinculado a este pedido, altera para CONFIRMED
-    # Seus appointments usam 'status': 'PENDING' na criação. Aqui mudamos para 'CONFIRMED'
-    appointment = await db.appointments.find_one({"id": order.get("appointment_id")})
-    if appointment:
-        await db.appointments.update_one(
-            {"id": appointment["id"]},
-            {"$set": {"status": "CONFIRMED", "updated_at": datetime.now(timezone.utc)}}
+    logger.info(
+        f"Pedido confirmado: "
+        f"{order_id}"
+    )
+
+    # confirmar appointment
+    appointment_id = order.get(
+        "appointment_id"
+    )
+
+    if appointment_id:
+        appointment = (
+            await db.appointments.find_one(
+                {
+                    "id":
+                    appointment_id
+                }
+            )
         )
 
-    # 3. Processamento de Comissões utilizando suas regras de 'utils'
-    # Vamos iterar pelos itens do pedido para aplicar as taxas corretas
+        if appointment:
+            await db.appointments.update_one(
+                {
+                    "id":
+                    appointment_id
+                },
+                {
+                    "$set": {
+                        "status":
+                            "CONFIRMED",
+                        "updated_at":
+                            datetime.now(
+                                timezone.utc
+                            )
+                    }
+                }
+            )
+
+            logger.info(
+                f"Appointment confirmado: "
+                f"{appointment_id}"
+            )
+
+    # gerar comissão
     total_commission = 0.0
-    items = order.get("items", [])
 
-    for item in items:
-        # Passa o tipo ("EXAM", "PRODUCT", etc.) para a sua função utilitária
-        item_type = item.get("type", "CONSULTATION")
-        rate = get_commission_rate(item_type)
-        
-        item_price = float(item.get("price", 0))
-        item_qty = int(item.get("quantity", 1))
-        
-        # Calcula a comissão do item
-        total_commission += (item_price * item_qty) * rate
+    for item in order.get(
+        "items",
+        []
+    ):
+        item_type = item.get(
+            "type",
+            "CONSULTATION"
+        )
 
-    gross_amount = float(order.get("total", 0))
-    net_amount = gross_amount - total_commission
+        rate = get_commission_rate(
+            item_type
+        )
 
-    # 4. Salva o documento de comissão na coleção 'commissions'
+        price = float(
+            item.get(
+                "price",
+                0
+            )
+        )
+
+        quantity = int(
+            item.get(
+                "quantity",
+                1
+            )
+        )
+
+        total_commission += (
+            price *
+            quantity
+        ) * rate
+
+    gross_amount = float(
+        order.get(
+            "total",
+            0
+        )
+    )
+
+    net_amount = (
+        gross_amount -
+        total_commission
+    )
+
     commission_document = {
-        "id": str(uuid.uuid4()),
-        "order_id": order_id,
-        "provider_id": order.get("provider_id"),
-        "provider_name": order.get("provider_name"),
-        "gross_amount": gross_amount,
-        "commission_amount": round(total_commission, 2),
-        "net_amount": round(net_amount, 2),
-        "is_paid": False,
-        "paid_at": None,
-        "created_at": datetime.now(timezone.utc)
+        "id":
+            str(uuid.uuid4()),
+        "order_id":
+            order_id,
+        "provider_id":
+            order.get(
+                "provider_id"
+            ),
+        "provider_name":
+            order.get(
+                "provider_name"
+            ),
+        "gross_amount":
+            gross_amount,
+        "commission_amount":
+            round(
+                total_commission,
+                2
+            ),
+        "net_amount":
+            round(
+                net_amount,
+                2
+            ),
+        "is_paid":
+            False,
+        "paid_at":
+            None,
+        "created_at":
+            datetime.now(
+                timezone.utc
+            )
     }
-    await db.commissions.insert_one(commission_document)
+
+    await db.commissions.insert_one(
+        commission_document
+    )
+
+    logger.info(
+        f"Comissão criada "
+        f"para pedido "
+        f"{order_id}"
+    )
