@@ -1,12 +1,12 @@
-# app/api/routes/orders.py
-
 from fastapi import APIRouter, Depends, HTTPException
-from datetime import datetime, timezone
-import uuid
-
 from app.core.security import get_current_user
 from app.schemas.order import OrderIn
 from app.core.database import db
+from datetime import datetime, timezone
+import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -16,9 +16,7 @@ async def create_order_endpoint(
     data: OrderIn,
     user=Depends(get_current_user)
 ):
-    """
-    Cria um novo pedido
-    """
+    """Cria um novo pedido"""
 
     try:
         total = sum(
@@ -38,25 +36,38 @@ async def create_order_endpoint(
                 item.dict()
                 for item in data.items
             ],
-            "total": total,
+            "total": float(total),
             "status": "PENDING",
             "payment_id": None,
             "payment_status": None,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(
+                timezone.utc
+            ),
+            "updated_at": datetime.now(
+                timezone.utc
+            ),
         }
 
-        # ✅ Mongo collection correta
-        await db["orders"].insert_one(order)
+        # ✅ CORREÇÃO
+        await db.orders.insert_one(order)
+
+        logger.info(
+            f"✅ Pedido criado: {order['id']}"
+        )
 
         return {
             "id": order["id"],
             "status": order["status"],
             "total": order["total"],
-            "items": order["items"]
+            "items": order["items"],
         }
 
     except Exception as e:
+        logger.error(
+            f"❌ Erro ao criar pedido: {str(e)}",
+            exc_info=True
+        )
+
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao criar pedido: {str(e)}"
@@ -67,12 +78,10 @@ async def create_order_endpoint(
 async def get_orders(
     user=Depends(get_current_user)
 ):
-    """
-    Lista pedidos do usuário
-    """
+    """Lista pedidos do usuário"""
 
     try:
-        orders = await db["orders"].find(
+        orders = await db.orders.find(
             {"user_id": user["id"]}
         ).to_list(length=100)
 
@@ -81,7 +90,7 @@ async def get_orders(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao listar pedidos: {str(e)}"
+            detail=str(e)
         )
 
 
@@ -90,29 +99,17 @@ async def get_order(
     order_id: str,
     user=Depends(get_current_user)
 ):
-    """
-    Busca um pedido específico
-    """
+    """Busca um pedido específico"""
 
-    try:
-        order = await db["orders"].find_one({
-            "id": order_id,
-            "user_id": user["id"]
-        })
+    order = await db.orders.find_one({
+        "id": order_id,
+        "user_id": user["id"]
+    })
 
-        if not order:
-            raise HTTPException(
-                status_code=404,
-                detail="Pedido não encontrado"
-            )
-
-        return order
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
+    if not order:
         raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao buscar pedido: {str(e)}"
+            status_code=404,
+            detail="Pedido não encontrado"
         )
+
+    return order
