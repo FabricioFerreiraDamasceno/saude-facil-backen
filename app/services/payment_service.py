@@ -11,7 +11,6 @@ from fastapi import (
 )
 
 from app.core.database import db
-
 from app.utils.commission import (
     get_commission_rate,
 )
@@ -43,7 +42,7 @@ async def process_payment_webhook(
                 detail="payment_id é obrigatório"
             )
 
-        # salva evento webhook
+        # salvar evento webhook
         event = {
             "id": str(uuid.uuid4()),
             "gateway": gateway,
@@ -58,21 +57,22 @@ async def process_payment_webhook(
             )
         }
 
-        # ✅ CORREÇÃO
-        await db["webhook_events"].insert_one(
+        await db.webhook_events.insert_one(
             event
         )
 
         logger.info(
-            f"Webhook recebido: "
+            f"Webhook recebido "
             f"{gateway} "
             f"payment_id={payment_id}"
         )
 
         # buscar pagamento
-        payment = await db.payments.find_one({
-            "id": payment_id
-        })
+        payment = await db.payments.find_one(
+            {
+                "id": payment_id
+            }
+        )
 
         if not payment:
             raise HTTPException(
@@ -99,11 +99,11 @@ async def process_payment_webhook(
         )
 
         logger.info(
-            f"Pagamento atualizado: "
+            f"Pagamento atualizado "
             f"{payment_id} -> {status}"
         )
 
-        # se aprovado confirma pedido
+        # confirmar pedido
         if status.upper() in [
             "APPROVED",
             "PAID",
@@ -113,7 +113,7 @@ async def process_payment_webhook(
                 payment["order_id"]
             )
 
-        # marcar evento como processado
+        # marcar evento processado
         await db.webhook_events.update_one(
             {
                 "id": event["id"]
@@ -154,12 +154,15 @@ async def confirm_order_and_appointment(
 ):
     """
     Confirma pedido,
-    appointment e gera comissão
+    appointment
+    e gera comissão
     """
 
-    order = await db["orders"].find_one({
-    "id": order_id
-  })
+    order = await db.orders.find_one(
+        {
+            "id": order_id
+        }
+    )
 
     if not order:
         logger.warning(
@@ -169,7 +172,7 @@ async def confirm_order_and_appointment(
         return
 
     # atualizar pedido
-    await db["orders"].update_one(
+    await db.orders.update_one(
         {
             "id": order_id
         },
@@ -197,6 +200,7 @@ async def confirm_order_and_appointment(
     )
 
     if appointment_id:
+
         appointment = (
             await db.appointments.find_one(
                 {
@@ -207,7 +211,8 @@ async def confirm_order_and_appointment(
         )
 
         if appointment:
-            appointment = await db["appointments"].find_one(
+
+            await db.appointments.update_one(
                 {
                     "id":
                     appointment_id
@@ -236,6 +241,7 @@ async def confirm_order_and_appointment(
         "items",
         []
     ):
+
         item_type = item.get(
             "type",
             "CONSULTATION"
