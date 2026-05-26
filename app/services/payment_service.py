@@ -43,7 +43,7 @@ async def process_payment_webhook(
             )
 
         # salvar evento webhook
-        event = {
+        webhook_data = {
             "id": str(uuid.uuid4()),
             "gateway": gateway,
             "event_type": payload.get(
@@ -57,9 +57,7 @@ async def process_payment_webhook(
             )
         }
 
-        await db.webhook_events.insert_one(
-            event
-        )
+        await db.webhook_events.insert_one(webhook_data)
 
         logger.info(
             f"Webhook recebido "
@@ -116,7 +114,7 @@ async def process_payment_webhook(
         # marcar evento processado
         await db.webhook_events.update_one(
             {
-                "id": event["id"]
+                "id":  webhook_data["id"]
             },
             {
                 "$set": {
