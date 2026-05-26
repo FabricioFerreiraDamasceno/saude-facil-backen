@@ -1,139 +1,328 @@
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Body,
-)
+import uuid
+import logging
 
 from datetime import (
     datetime,
     timezone,
 )
 
-import uuid
-
-from app.core.security import (
-    get_current_user,
-)
-
-from app.services.payment_service import (
-    process_payment_webhook,
+from fastapi import (
+    HTTPException,
 )
 
 from app.core.database import db
+from app.utils.commission import (
+    get_commission_rate,
+)
+
+logger = logging.getLogger(__name__)
 
 
-router = APIRouter()
-
-
-@router.post("/checkout")
-async def create_checkout(
-    payload: dict = Body(...),
-    user=Depends(get_current_user),
+async def process_payment_webhook(
+    gateway: str,
+    payload: dict
 ):
     """
-    Cria um pagamento pendente
+    Processa webhook do gateway
     """
 
     try:
-        order_id = payload.get("order_id")
-        method = payload.get("method")
+        payment_id = payload.get(
+            "payment_id"
+        )
 
-        if not order_id:
+        status = payload.get(
+            "status",
+            "APPROVED"
+        )
+
+        if not payment_id:
             raise HTTPException(
                 status_code=400,
-                detail="order_id é obrigatório",
+                detail="payment_id é obrigatório"
             )
 
-        if not method:
-            raise HTTPException(
-                status_code=400,
-                detail="method é obrigatório",
-            )
-
-        # buscar pedido
-        order = await db.orders.find_one({
-            "id": order_id
-        })
-
-        if not order:
-            raise HTTPException(
-                status_code=404,
-                detail="Pedido não encontrado",
-            )
-
-        payment_id = str(uuid.uuid4())
-
-        payment_document = {
-            "id": payment_id,
-            "user_id": user["id"],
-            "user_email": user.get("email"),
-            "user_name": user.get("full_name"),
-            "order_id": order_id,
-            "method": method,
-            "status": "PENDING",
-            "amount": float(
-                order.get("total", 0)
+        # salvar evento webhook
+        event = {
+            "id": str(uuid.uuid4()),
+            "gateway": gateway,
+            "event_type": payload.get(
+                "type",
+                "payment"
             ),
-            "transaction_id": None,
-            "paid_at": None,
+            "payload": payload,
+            "processed": False,
             "created_at": datetime.now(
                 timezone.utc
-            ),
-            "updated_at": datetime.now(
-                timezone.utc
-            ),
+            )
         }
 
-        await db.payments.insert_one(
-            payment_document
+        await db.webhook_events.insert_one(
+            event
+        )
+
+        logger.info(
+            f"Webhook recebido "
+            f"{gateway} "
+            f"payment_id={payment_id}"
+        )
+
+        # buscar pagamento
+        payment = await db.payments.find_one(
+            {
+                "id": payment_id
+            }
+        )
+
+        if not payment:
+            raise HTTPException(
+                status_code=404,
+                detail="Pagamento não encontrado"
+            )
+
+        # atualizar pagamento
+        await db.payments.update_one(
+            {
+                "id": payment_id
+            },
+            {
+                "$set": {
+                    "status": status,
+                    "paid_at": datetime.now(
+                        timezone.utc
+                    ),
+                    "updated_at": datetime.now(
+                        timezone.utc
+                    )
+                }
+            }
+        )
+
+        logger.info(
+            f"Pagamento atualizado "
+            f"{payment_id} -> {status}"
+        )
+
+        # confirmar pedido
+        if status.upper() in [
+            "APPROVED",
+            "PAID",
+            "SUCCESS"
+        ]:
+            await confirm_order_and_appointment(
+                payment["order_id"]
+            )
+
+        # marcar evento processado
+        await db.webhook_events.update_one(
+            {
+                "id": event["id"]
+            },
+            {
+                "$set": {
+                    "processed": True
+                }
+            }
         )
 
         return {
+            "success": True,
             "message":
-                "Checkout iniciado",
+                "Webhook processado",
             "payment_id":
                 payment_id,
             "status":
-                "PENDING",
-            "amount":
-                payment_document["amount"],
+                status
         }
 
     except HTTPException:
         raise
 
     except Exception as e:
+        logger.exception(
+            "Erro ao processar webhook"
+        )
+
         raise HTTPException(
             status_code=500,
-            detail=f"Erro checkout: {str(e)}"
+            detail=str(e)
         )
 
 
-@router.post("/webhooks/{gateway}")
-async def gateway_webhook(
-    gateway: str,
-    payload: dict = Body(...),
+async def confirm_order_and_appointment(
+    order_id: str
 ):
     """
-    Endpoint webhook gateway
+    Confirma pedido,
+    appointment
+    e gera comissão
     """
 
-    try:
-        result = await (
-            process_payment_webhook(
-                gateway,
-                payload
+    order = await db.orders.find_one(
+        {
+            "id": order_id
+        }
+    )
+
+    if not order:
+        logger.warning(
+            f"Pedido não encontrado: "
+            f"{order_id}"
+        )
+        return
+
+    # atualizar pedido
+    await db.orders.update_one(
+        {
+            "id": order_id
+        },
+        {
+            "$set": {
+                "status": "PAID",
+                "payment_status":
+                    "APPROVED",
+                "updated_at":
+                    datetime.now(
+                        timezone.utc
+                    )
+            }
+        }
+    )
+
+    logger.info(
+        f"Pedido confirmado: "
+        f"{order_id}"
+    )
+
+    # confirmar appointment
+    appointment_id = order.get(
+        "appointment_id"
+    )
+
+    if appointment_id:
+
+        appointment = (
+            await db.appointments.find_one(
+                {
+                    "id":
+                    appointment_id
+                }
             )
         )
 
-        return result
+        if appointment:
 
-    except HTTPException:
-        raise
+            await db.appointments.update_one(
+                {
+                    "id":
+                    appointment_id
+                },
+                {
+                    "$set": {
+                        "status":
+                            "CONFIRMED",
+                        "updated_at":
+                            datetime.now(
+                                timezone.utc
+                            )
+                    }
+                }
+            )
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro webhook: {str(e)}"
+            logger.info(
+                f"Appointment confirmado: "
+                f"{appointment_id}"
+            )
+
+    # gerar comissão
+    total_commission = 0.0
+
+    for item in order.get(
+        "items",
+        []
+    ):
+
+        item_type = item.get(
+            "type",
+            "CONSULTATION"
         )
+
+        rate = get_commission_rate(
+            item_type
+        )
+
+        price = float(
+            item.get(
+                "price",
+                0
+            )
+        )
+
+        quantity = int(
+            item.get(
+                "quantity",
+                1
+            )
+        )
+
+        total_commission += (
+            price *
+            quantity
+        ) * rate
+
+    gross_amount = float(
+        order.get(
+            "total",
+            0
+        )
+    )
+
+    net_amount = (
+        gross_amount -
+        total_commission
+    )
+
+    commission_document = {
+        "id":
+            str(uuid.uuid4()),
+        "order_id":
+            order_id,
+        "provider_id":
+            order.get(
+                "provider_id"
+            ),
+        "provider_name":
+            order.get(
+                "provider_name"
+            ),
+        "gross_amount":
+            gross_amount,
+        "commission_amount":
+            round(
+                total_commission,
+                2
+            ),
+        "net_amount":
+            round(
+                net_amount,
+                2
+            ),
+        "is_paid":
+            False,
+        "paid_at":
+            None,
+        "created_at":
+            datetime.now(
+                timezone.utc
+            )
+    }
+
+    await db.commissions.insert_one(
+        commission_document
+    )
+
+    logger.info(
+        f"Comissão criada "
+        f"para pedido "
+        f"{order_id}"
+    )
